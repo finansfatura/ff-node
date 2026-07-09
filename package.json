@@ -1,0 +1,27 @@
+{
+  "name": "finansfatura",
+  "version": "0.1.1",
+  "description": "Node client for the Finansfatura e-invoice (e-Fatura / e-Arşiv) API",
+  "type": "module",
+  "main": "src/index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./src/index.js"
+    }
+  },
+  "files": ["src", "index.d.ts", "README.md", "LICENSE"],
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["finansfatura", "efatura", "earsiv", "e-invoice", "gib", "invoicing"],
+  "license": "MIT",
+  "author": "Finansfatura",
+  "homepage": "https://github.com/finansfatura/ff-node",
+  "repository": { "type": "git", "url": "https://github.com/finansfatura/ff-node.git" },
+  "bugs": { "url": "https://github.com/finansfatura/ff-node/issues" }
+}
