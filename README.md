@@ -231,6 +231,10 @@ await oauth.revoke(storedRefreshToken);                 // end the connection
 - `baseUrl` is the API host only (`https://api.finansfatura.com`) — paths are
   built by the client. Since 0.2.0 it no longer includes `/v1/invoicing`.
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
+
 ## Development
 
 ```bash

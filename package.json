@@ -11,7 +11,7 @@
       "default": "./src/index.js"
     }
   },
-  "files": ["src", "index.d.ts", "README.md", "LICENSE"],
+  "files": ["src", "index.d.ts", "README.md", "CHANGELOG.md", "LICENSE"],
   "scripts": {
     "test": "node --test"
   },
