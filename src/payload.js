@@ -92,6 +92,14 @@ function linesAndTotals(lines) {
  * `title`/`address`/`tax_office`/`email`/`phone`. `lines` are objects with
  * `title`/`qty`/`unit_price`/`vat_rate` (+ optional `product_code`/`unit_code`).
  *
+ * Pass `transactionHeaderId` — the `transaction_id` returned by `createOrder()`.
+ * Without it the invoice is attached to no sale: it stays out of the turnover
+ * report, the current account and stock.
+ *
+ * Leave `recipientAlias` empty unless you know the mailbox handle: the server
+ * looks the VKN up at GİB and upgrades `EARSIV` to `EFATURA` (with the right
+ * alias) when the recipient turns out to be registered.
+ *
  * Do NOT pass `issuer` in production — the server fills seller identity from the
  * company profile. It exists only for testing before the profile VKN is set.
  */
@@ -99,32 +107,39 @@ export function buildPayload(
   documentType,
   recipient,
   lines,
-  { issuer, recipientAlias, invoiceTypeCode = "SATIS", note } = {},
+  { transactionHeaderId, issuer, recipientAlias = "", invoiceTypeCode = "SATIS", note } = {},
 ) {
   const { canon, totals } = linesAndTotals(lines);
   const canonical = {
     DocumentType: documentType,
     InvoiceTypeCode: invoiceTypeCode,
     Currency: "TRY",
+    RecipientAlias: recipientAlias || "",
     Recipient: party(recipient),
     Lines: canon,
     Totals: totals,
   };
   if (issuer != null) canonical.Issuer = party(issuer);
-  if (recipientAlias) canonical.RecipientAlias = recipientAlias;
   if (note) canonical.Note = note;
-  return { document_type: documentType, canonical };
+  const payload = { document_type: documentType, canonical };
+  if (transactionHeaderId) payload.transaction_header_id = transactionHeaderId;
+  return payload;
 }
 
-/** e-Arşiv (final consumer / non-registered recipient — TCKN is fine). */
+/**
+ * e-Arşiv (final consumer / non-registered recipient — TCKN is fine).
+ *
+ * The safe default for e-commerce: if the buyer turns out to be a registered
+ * e-Fatura taxpayer, the server upgrades the document for you.
+ */
 export function buildEarsivPayload(recipient, lines, opts = {}) {
   return buildPayload("EARSIV", recipient, lines, opts);
 }
 
 /**
- * e-Fatura (GİB-registered recipient). `recipientAlias` is required — the mailbox
- * handle GİB routes by (resolve it via a recipient lookup first).
+ * e-Fatura (GİB-registered recipient). `recipientAlias` is optional — the server
+ * resolves the mailbox handle from the VKN when you leave it empty.
  */
-export function buildEfaturaPayload(recipient, lines, recipientAlias, opts = {}) {
+export function buildEfaturaPayload(recipient, lines, recipientAlias = "", opts = {}) {
   return buildPayload("EFATURA", recipient, lines, { ...opts, recipientAlias });
 }

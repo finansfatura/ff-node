@@ -1,29 +1,54 @@
-// HTTP client for the Finansfatura e-invoice API.
+// HTTP client for the Finansfatura API.
+//
+// The integration is two steps: create the sale, then invoice it.
 //
 //   import { FinansfaturaClient, buildEarsivPayload } from "finansfatura";
 //
 //   const ff = new FinansfaturaClient({ apiKey: "ff_live_..." });
+//
+//   const sale = await ff.createOrder({
+//     provider: "ECOMSOFT",
+//     external_id: "ORD-1042",
+//     total_price: 120.0,                          // KDV *dahil*
+//     buyer: { title: "Ahmet Yılmaz", tckn: "11111111111" },
+//     lines: [{ title: "Kulaklık", sku: "SKU-1042",
+//               quantity: 1, unit_price: 120.0, vat_rate: 20 }],
+//   });
+//
 //   const payload = buildEarsivPayload(
 //     { vkn_tckn: "11111111111", title: "Ahmet Yılmaz" },
-//     [{ title: "Kulaklık", qty: 1, unit_price: 100.0, vat_rate: 0.20 }],
+//     [{ title: "Kulaklık", qty: 1, unit_price: 100.0, vat_rate: 0.20 }],  // KDV *hariç*
+//     { transactionHeaderId: sale.transaction_id },
 //   );
-//   const result = await ff.issueInvoice(payload, "order-1042");
+//   const result = await ff.issueInvoice(payload, "ORD-1042");
+//
+// Invoicing is optional: skip it and the company invoices the sales from the panel.
 
 import { errorFromResponse } from "./errors.js";
 
-export const DEFAULT_BASE_URL = "https://api.finansfatura.com/v1/invoicing";
+export const DEFAULT_BASE_URL = "https://api.finansfatura.com";
+export const SANDBOX_BASE_URL = "https://sandbox-api.finansfatura.com";
+
+/** the status endpoint takes at most this many ids per call */
+export const MAX_STATUS_IDS = 50;
 
 export class FinansfaturaClient {
   /**
+   * Authenticate with either an API key (`X-Api-Key`, one company, pasted by the
+   * taxpayer) or an OAuth access token (`Authorization: Bearer`, many companies,
+   * see OAuth). Exactly one of the two.
+   *
    * @param {object} opts
-   * @param {string} opts.apiKey - your `ff_live_...` / `ff_test_...` key (sent as X-Api-Key).
-   * @param {string} [opts.baseUrl]
+   * @param {string} [opts.apiKey] - your `ff_live_...` / `ff_test_...` key.
+   * @param {string} [opts.accessToken] - an OAuth access token.
+   * @param {string} [opts.baseUrl] - API host only; paths are built here.
    * @param {number} [opts.timeout] - per-request timeout in ms (default 15000).
    * @param {typeof fetch} [opts.fetch] - inject a fetch impl (real HTTP by default; fake in tests).
    */
-  constructor({ apiKey, baseUrl = DEFAULT_BASE_URL, timeout = 15000, fetch: fetchImpl } = {}) {
-    if (!apiKey) throw new Error("apiKey is required");
+  constructor({ apiKey, accessToken, baseUrl = DEFAULT_BASE_URL, timeout = 15000, fetch: fetchImpl } = {}) {
+    if (!apiKey === !accessToken) throw new Error("pass exactly one of apiKey or accessToken");
     this.apiKey = apiKey;
+    this.accessToken = accessToken;
     this.base = baseUrl.replace(/\/+$/, "");
     this.timeout = timeout;
     this.fetch = fetchImpl || globalThis.fetch;
@@ -31,7 +56,10 @@ export class FinansfaturaClient {
   }
 
   _headers(extra) {
-    return { "X-Api-Key": this.apiKey, "Content-Type": "application/json", ...extra };
+    const auth = this.apiKey
+      ? { "X-Api-Key": this.apiKey }
+      : { Authorization: `Bearer ${this.accessToken}` };
+    return { ...auth, "Content-Type": "application/json", ...extra };
   }
 
   async _request(method, path, { query, body, headers } = {}) {
@@ -65,45 +93,95 @@ export class FinansfaturaClient {
     return resp;
   }
 
+  // -- sales -----------------------------------------------------------------
+
   /**
-   * POST /invoices/ — issue a document. `idempotencyKey` (any unique string,
-   * e.g. the order id) is required; retrying with the same key never double-issues.
+   * POST /v1/integrations/orders — turn an order into a sale.
+   *
+   * The first and mandatory step: the sale feeds the company's turnover, current
+   * account and stock, and survives a failed invoice attempt.
+   *
+   * `order` needs `external_id` (your stable order id — resending it never
+   * duplicates the sale) and at least one line. Prices here are KDV-INCLUSIVE and
+   * `vat_rate` is a percentage (`20`) — the opposite of the invoice payload,
+   * which is KDV-exclusive with a ratio (`0.20`). Mixing the two up is the most
+   * common integration bug.
+   *
+   * Resolves to the API body; `transaction_id` is the sale id to pass on to
+   * `issueInvoice`, and `already_imported` tells you it was a repeat.
+   */
+  async createOrder(order) {
+    const resp = await this._request("POST", "/v1/integrations/orders", { body: order });
+    return resp.json();
+  }
+
+  /**
+   * GET /v1/integrations/:provider/orders/status — bulk invoice status.
+   *
+   * `externalIds` is an array (or comma string) of your order ids, at most 50 per
+   * call. Ids we never received are simply absent from the response, so match on
+   * `external_id` instead of trusting the order.
+   */
+  async orderStatus(provider, externalIds) {
+    const ids = (typeof externalIds === "string" ? externalIds.split(",") : [...externalIds]).filter(Boolean);
+    if (!ids.length) throw new Error("externalIds is required");
+    if (ids.length > MAX_STATUS_IDS) throw new Error(`at most ${MAX_STATUS_IDS} externalIds per call`);
+    const resp = await this._request("GET", `/v1/integrations/${provider}/orders/status`, {
+      query: { external_ids: ids.join(",") },
+    });
+    return resp.json();
+  }
+
+  // -- invoices --------------------------------------------------------------
+
+  /**
+   * POST /v1/invoicing/invoices/ — issue a document. `idempotencyKey` (any unique
+   * string, e.g. the order id) is required; retrying with the same key never
+   * double-issues and never charges credits twice.
+   *
+   * The invoice number is not in the response — read it from `orderStatus` once
+   * the provider assigns it.
    */
   async issueInvoice(payload, idempotencyKey) {
     if (!idempotencyKey) throw new Error("idempotencyKey is required");
-    const resp = await this._request("POST", "/invoices/", {
+    const resp = await this._request("POST", "/v1/invoicing/invoices/", {
       body: payload,
       headers: { "Idempotency-Key": String(idempotencyKey) },
     });
     return resp.json();
   }
 
-  /** GET /invoices/:id — one invoice (poll here while status is QUEUED). */
+  /** GET /v1/invoicing/invoices/:id — one invoice. */
   async getInvoice(invoiceId) {
-    const resp = await this._request("GET", `/invoices/${invoiceId}`);
+    const resp = await this._request("GET", `/v1/invoicing/invoices/${invoiceId}`);
     return resp.json();
   }
 
-  /** GET /invoices/ — paginated list. */
-  async listInvoices(page = 1) {
-    const resp = await this._request("GET", "/invoices/", { query: { page } });
+  /** GET /v1/invoicing/invoices/ — paginated list. */
+  async listInvoices(page = 1, pageSize = 20) {
+    const resp = await this._request("GET", "/v1/invoicing/invoices/", {
+      query: { page, page_size: pageSize },
+    });
     return resp.json();
   }
 
   /**
-   * GET /invoices/:id/download — raw document bytes (pdf|html|xml).
+   * GET /v1/invoicing/invoices/:id/download — raw document bytes (pdf|html|xml).
    * @returns {Promise<Uint8Array>}
    */
   async download(invoiceId, format = "pdf") {
-    const resp = await this._request("GET", `/invoices/${invoiceId}/download`, {
+    const resp = await this._request("GET", `/v1/invoicing/invoices/${invoiceId}/download`, {
       query: { format },
     });
     return new Uint8Array(await resp.arrayBuffer());
   }
 
-  /** POST /invoices/:id/cancel — cancel before GİB acceptance. */
+  /**
+   * POST /v1/invoicing/invoices/:id/cancel — e-Arşiv cancels outright; e-Fatura
+   * starts a process that depends on the recipient.
+   */
   async cancel(invoiceId) {
-    await this._request("POST", `/invoices/${invoiceId}/cancel`);
+    await this._request("POST", `/v1/invoicing/invoices/${invoiceId}/cancel`);
     return true;
   }
 }

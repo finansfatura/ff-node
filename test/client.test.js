@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { FinansfaturaClient, InsufficientCredits } from "../src/index.js";
+import {
+  FinansfaturaClient,
+  InsufficientCredits,
+  OAuth,
+  RateLimitError,
+  SANDBOX_BASE_URL,
+  ValidationError,
+  generatePkce,
+} from "../src/index.js";
 
 // Minimal fake fetch: records the last call, returns a canned Response-like object.
 function fakeFetch(status, payload) {
@@ -43,6 +51,115 @@ test("missing idempotency key rejected client-side", async () => {
   await assert.rejects(() => ff.issueInvoice({}, ""), /idempotencyKey is required/);
 });
 
-test("apiKey required", () => {
-  assert.throws(() => new FinansfaturaClient({ apiKey: "" }), /apiKey is required/);
+test("exactly one credential required", () => {
+  assert.throws(() => new FinansfaturaClient({ apiKey: "" }), /exactly one/);
+  assert.throws(() => new FinansfaturaClient({ apiKey: "k", accessToken: "t" }), /exactly one/);
+});
+
+test("access token sends bearer, not api key", async () => {
+  const fetch = fakeFetch(200, { statuses: [] });
+  const ff = new FinansfaturaClient({ accessToken: "at_123", fetch });
+  await ff.orderStatus("ecomsoft", ["A"]);
+  const { opts } = fetch.calls[0];
+  assert.equal(opts.headers.Authorization, "Bearer at_123");
+  assert.equal(opts.headers["X-Api-Key"], undefined);
+});
+
+test("createOrder hits the integrations path", async () => {
+  const fetch = fakeFetch(201, { imported: true, transaction_id: "t-1" });
+  const ff = new FinansfaturaClient({ apiKey: "ff_live_x", fetch });
+  const out = await ff.createOrder({ external_id: "ORD-1", lines: [] });
+  assert.equal(out.transaction_id, "t-1");
+  const { url, opts } = fetch.calls[0];
+  assert.equal(opts.method, "POST");
+  assert.ok(url.endsWith("/v1/integrations/orders"));
+});
+
+test("orderStatus joins ids and caps at 50", async () => {
+  const fetch = fakeFetch(200, { statuses: [] });
+  const ff = new FinansfaturaClient({ apiKey: "ff_live_x", fetch });
+  await ff.orderStatus("ecomsoft", ["ORD-1", "ORD-2"]);
+  const { url, opts } = fetch.calls[0];
+  assert.equal(opts.method, "GET");
+  assert.ok(url.includes("/v1/integrations/ecomsoft/orders/status?"));
+  assert.ok(url.endsWith("external_ids=ORD-1%2CORD-2"));
+
+  const tooMany = Array.from({ length: 51 }, (_, i) => String(i));
+  await assert.rejects(() => ff.orderStatus("ecomsoft", tooMany), /at most 50/);
+  await assert.rejects(() => ff.orderStatus("ecomsoft", []), /required/);
+});
+
+test("429 is retryable, 400 is not", async () => {
+  const rateLimited = new FinansfaturaClient({ apiKey: "k", fetch: fakeFetch(429, { message: "slow down" }) });
+  await assert.rejects(() => rateLimited.createOrder({}), (e) => {
+    assert.ok(e instanceof RateLimitError);
+    assert.equal(e.retryable, true);
+    return true;
+  });
+
+  const bad = new FinansfaturaClient({ apiKey: "k", fetch: fakeFetch(400, { message: "validation error" }) });
+  await assert.rejects(() => bad.createOrder({}), (e) => {
+    assert.ok(e instanceof ValidationError);
+    assert.equal(e.retryable, false);
+    return true;
+  });
+});
+
+test("pkce pair is url-safe and verifiable", async () => {
+  const { createHash } = await import("node:crypto");
+  const { verifier, challenge } = generatePkce();
+  assert.ok(!/[+/=]/.test(verifier + challenge));
+  const expected = createHash("sha256").update(verifier).digest("base64")
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  assert.equal(challenge, expected);
+});
+
+test("authorize url carries pkce and state", () => {
+  const oauth = new OAuth({
+    clientId: "cid",
+    clientSecret: "sec",
+    redirectUri: "https://app.example.com/cb",
+    fetch: fakeFetch(200, {}),
+  });
+  const url = oauth.authorizeUrl({ codeChallenge: "chal", state: "xyz" });
+  assert.ok(url.startsWith("https://app.finansfatura.com/oauth/authorize?"));
+  assert.ok(url.includes("code_challenge=chal"));
+  assert.ok(url.includes("code_challenge_method=S256"));
+  assert.ok(url.includes("response_type=code"));
+  assert.ok(url.includes("state=xyz"));
+});
+
+test("sandbox api url implies sandbox panel", () => {
+  const oauth = new OAuth({
+    clientId: "cid",
+    baseUrl: SANDBOX_BASE_URL,
+    redirectUri: "https://app.example.com/cb",
+    fetch: fakeFetch(200, {}),
+  });
+  assert.ok(oauth.authorizeUrl().startsWith("https://sandbox-app.finansfatura.com/"));
+});
+
+test("token endpoints keep their trailing slash and post a form", async () => {
+  const fetch = fakeFetch(200, { access_token: "at", refresh_token: "rt" });
+  const oauth = new OAuth({
+    clientId: "cid",
+    clientSecret: "sec",
+    redirectUri: "https://app.example.com/cb",
+    fetch,
+  });
+
+  const token = await oauth.exchangeCode("the-code", { codeVerifier: "ver" });
+  assert.equal(token.access_token, "at");
+  const exchange = fetch.calls[0];
+  assert.ok(exchange.url.endsWith("/v1/oauth/token/"));
+  assert.equal(exchange.opts.headers["Content-Type"], "application/x-www-form-urlencoded");
+  const form = new URLSearchParams(exchange.opts.body);
+  assert.equal(form.get("grant_type"), "authorization_code");
+  assert.equal(form.get("code_verifier"), "ver");
+  assert.equal(form.get("client_secret"), "sec");
+
+  await oauth.revoke("rt");
+  const revoke = fetch.calls[1];
+  assert.ok(revoke.url.endsWith("/v1/oauth/revoke/"));
+  assert.equal(new URLSearchParams(revoke.opts.body).get("token"), "rt");
 });

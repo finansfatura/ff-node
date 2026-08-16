@@ -42,3 +42,16 @@ test("no float drift — banker's rounding on kuruş", () => {
   assert.equal(p.canonical.Lines[1].LineTotal, 50.0);
   assert.equal(p.canonical.Totals.SubtotalExclVAT, 149.99);
 });
+
+test("transaction_header_id is attached and the alias defaults to empty", () => {
+  const lines = [{ title: "A", qty: 1, unit_price: 100.0, vat_rate: 0.2 }];
+  const p = buildEarsivPayload({ vkn_tckn: "11111111111" }, lines, {
+    transactionHeaderId: "9f1c2d3e-4a5b",
+  });
+  assert.equal(p.transaction_header_id, "9f1c2d3e-4a5b");
+  // empty alias is sent explicitly — that's what makes the server resolve it
+  assert.equal(p.canonical.RecipientAlias, "");
+  // omitted when unknown, so the server never sees a null sale id
+  const bare = buildEarsivPayload({ vkn_tckn: "1" }, lines);
+  assert.ok(!("transaction_header_id" in bare));
+});
