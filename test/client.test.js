@@ -10,6 +10,14 @@ import {
   generatePkce,
 } from "../src/index.js";
 
+// A minimally valid order: id, one line, and a buyer that names the cari.
+const order = (over = {}) => ({
+  external_id: "ORD-1",
+  buyer: { title: "Ahmet Yılmaz", tckn: "11111111111" },
+  lines: [{ title: "A", quantity: 1, unit_price: 120.0, vat_rate: 20 }],
+  ...over,
+});
+
 // Minimal fake fetch: records the last call, returns a canned Response-like object.
 function fakeFetch(status, payload) {
   const calls = [];
@@ -68,11 +76,26 @@ test("access token sends bearer, not api key", async () => {
 test("createOrder hits the integrations path", async () => {
   const fetch = fakeFetch(201, { imported: true, transaction_id: "t-1" });
   const ff = new FinansfaturaClient({ apiKey: "ff_live_x", fetch });
-  const out = await ff.createOrder({ external_id: "ORD-1", lines: [] });
+  const out = await ff.createOrder(order());
   assert.equal(out.transaction_id, "t-1");
   const { url, opts } = fetch.calls[0];
   assert.equal(opts.method, "POST");
   assert.ok(url.endsWith("/v1/integrations/orders"));
+});
+
+test("createOrder needs a buyer to hang the cari off", async () => {
+  const fetch = fakeFetch(201, {});
+  const ff = new FinansfaturaClient({ apiKey: "ff_live_x", fetch });
+
+  for (const bad of [order({ external_id: "" }), order({ lines: [] }),
+                     order({ buyer: undefined }), order({ buyer: { email: "a@b.c" } })]) {
+    await assert.rejects(() => ff.createOrder(bad), /is required|must have at least one line|names the cari/);
+  }
+  // rejected before the request — no round trip burned on a known-bad body
+  assert.equal(fetch.calls.length, 0);
+  // contact_name stands in for title: it is what names the cari
+  await ff.createOrder(order({ buyer: { contact_name: "Ahmet Yılmaz" } }));
+  assert.equal(fetch.calls.length, 1);
 });
 
 test("orderStatus joins ids and caps at 50", async () => {
@@ -91,14 +114,14 @@ test("orderStatus joins ids and caps at 50", async () => {
 
 test("429 is retryable, 400 is not", async () => {
   const rateLimited = new FinansfaturaClient({ apiKey: "k", fetch: fakeFetch(429, { message: "slow down" }) });
-  await assert.rejects(() => rateLimited.createOrder({}), (e) => {
+  await assert.rejects(() => rateLimited.createOrder(order()), (e) => {
     assert.ok(e instanceof RateLimitError);
     assert.equal(e.retryable, true);
     return true;
   });
 
   const bad = new FinansfaturaClient({ apiKey: "k", fetch: fakeFetch(400, { message: "validation error" }) });
-  await assert.rejects(() => bad.createOrder({}), (e) => {
+  await assert.rejects(() => bad.createOrder(order()), (e) => {
     assert.ok(e instanceof ValidationError);
     assert.equal(e.retryable, false);
     return true;

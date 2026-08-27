@@ -22,7 +22,10 @@
 //   );
 //   const result = await ff.issueInvoice(payload, "ORD-1042");
 //
-// Invoicing is optional: skip it and the company invoices the sales from the panel.
+// The order of the two is fixed and neither half is skippable mid-flow: the sale
+// needs a `buyer` (it becomes the current account — "cari" — the sale hangs off),
+// and the document needs the sale's `transaction_id`. Issuing the document at all
+// is still your call: leave it out and the company invoices its sales from the panel.
 
 import { errorFromResponse } from "./errors.js";
 
@@ -31,6 +34,19 @@ export const SANDBOX_BASE_URL = "https://sandbox-api.finansfatura.com";
 
 /** the status endpoint takes at most this many ids per call */
 export const MAX_STATUS_IDS = 50;
+
+// Reject client-side what the server would reject anyway — one round trip saved,
+// and the error names the field instead of arriving as a 400 body.
+function validateOrder(order) {
+  if (!order?.external_id) throw new Error("order.external_id is required");
+  if (!order.lines?.length) throw new Error("order.lines must have at least one line");
+  if (!order.buyer) {
+    throw new Error("order.buyer is required — the sale is booked against a cari, which is resolved from the buyer");
+  }
+  if (!order.buyer.title?.trim() && !order.buyer.contact_name?.trim()) {
+    throw new Error("order.buyer needs 'title' (or 'contact_name') — it names the cari");
+  }
+}
 
 export class FinansfaturaClient {
   /**
@@ -102,15 +118,22 @@ export class FinansfaturaClient {
    * account and stock, and survives a failed invoice attempt.
    *
    * `order` needs `external_id` (your stable order id — resending it never
-   * duplicates the sale) and at least one line. Prices here are KDV-INCLUSIVE and
-   * `vat_rate` is a percentage (`20`) — the opposite of the invoice payload,
-   * which is KDV-exclusive with a ratio (`0.20`). Mixing the two up is the most
-   * common integration bug.
+   * duplicates the sale), at least one line, and a `buyer`. The buyer becomes the
+   * current account ("cari") the sale is booked against: we match an existing one
+   * on `tax_number` → `tckn` → `email` → `title`, in that order, and create one
+   * when nothing matches. Hence `title` (or `contact_name`) is required — it is
+   * the name the cari gets. `tckn` / `tax_number` are not: send them when the
+   * channel has them, and the matching gets stronger.
+   *
+   * Prices here are KDV-INCLUSIVE and `vat_rate` is a percentage (`20`) — the
+   * opposite of the invoice payload, which is KDV-exclusive with a ratio
+   * (`0.20`). Mixing the two up is the most common integration bug.
    *
    * Resolves to the API body; `transaction_id` is the sale id to pass on to
    * `issueInvoice`, and `already_imported` tells you it was a repeat.
    */
   async createOrder(order) {
+    validateOrder(order);
     const resp = await this._request("POST", "/v1/integrations/orders", { body: order });
     return resp.json();
   }

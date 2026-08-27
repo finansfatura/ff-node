@@ -23,12 +23,16 @@ export interface Line {
 }
 
 export interface BuildOptions {
-  /** the `transaction_id` from `createOrder()` — send it, or the invoice hangs
-   *  off no sale (no turnover, no current account, no stock). */
+  /** the `transaction_id` from `createOrder()`. REQUIRED — every document hangs
+   *  off a sale (turnover, current account, stock all key off it); the builder
+   *  throws without it. Optional here only for the one exception:
+   *  `invoiceTypeCode: "IADE"`, which must NOT be attached or the sale counts
+   *  twice. */
   transactionHeaderId?: string;
   issuer?: Party;
   /** leave empty: the server resolves the GİB mailbox from the VKN. */
   recipientAlias?: string;
+  /** "SATIS" (default) or "IADE" — the only value that waives the sale link. */
   invoiceTypeCode?: string;
   note?: string;
 }
@@ -70,7 +74,11 @@ export interface OrderLine {
   discount?: number;
 }
 
-/** Send `tckn` for individuals, `tax_number` + `tax_office` for companies. */
+/** The buyer becomes the current account ("cari") the sale is booked against —
+ *  matched on `tax_number` → `tckn` → `email` → `title`, created when nothing
+ *  matches. `title` (or `contact_name`) is what names it, so one of the two is
+ *  required. Send `tckn` for individuals, `tax_number` + `tax_office` for
+ *  companies: not required, but they make the matching stronger. */
 export interface OrderBuyer {
   title?: string;
   contact_name?: string;
@@ -96,7 +104,8 @@ export interface Order {
   payment_status?: "PAID" | "PENDING";
   currency?: string;
   total_price?: number;
-  buyer?: OrderBuyer;
+  /** required — no cari, no sale. */
+  buyer: OrderBuyer;
   [key: string]: unknown;
 }
 

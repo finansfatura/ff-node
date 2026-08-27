@@ -3,6 +3,23 @@
 Notable changes per release. Versions follow [semver](https://semver.org);
 while below 1.0 a breaking change bumps the minor.
 
+## [0.3.0] — 2026-08-27
+
+The sale, and the cari behind it, are no longer optional. Both halves are now
+enforced client-side, before the request, matching what the API enforces.
+
+### Changed — BREAKING
+
+- `createOrder()` requires `buyer` with a `title` (or `contact_name`). The buyer is what
+  the sale's current account ("cari") is resolved from: matched on `tax_number` →
+  `tckn` → `email` → `title`, and created when nothing matches. A sale without one
+  used to be accepted and left carisiz; the API now rejects it.
+- `buildPayload()` (and the `buildEarsivPayload` / `buildEfaturaPayload` wrappers) requires `transactionHeaderId`. Every document hangs off a sale — that is what feeds
+  the turnover report, the current account and stock. The one exception is a
+  refund (`invoiceTypeCode:` `IADE`), which stays unattached so the sale is not counted twice.
+- `createOrder()` also rejects a missing `external_id` or empty `lines` up front, instead
+  of spending a round trip on a known 400.
+
 ## [0.2.0] — 2026-08-16
 
 The client only covered invoicing; the API expects the sale to exist first.

@@ -92,9 +92,14 @@ function linesAndTotals(lines) {
  * `title`/`address`/`tax_office`/`email`/`phone`. `lines` are objects with
  * `title`/`qty`/`unit_price`/`vat_rate` (+ optional `product_code`/`unit_code`).
  *
- * Pass `transactionHeaderId` — the `transaction_id` returned by `createOrder()`.
- * Without it the invoice is attached to no sale: it stays out of the turnover
- * report, the current account and stock.
+ * `transactionHeaderId` is REQUIRED — the `transaction_id` returned by
+ * `createOrder()`. Every document hangs off a sale: that is what feeds the
+ * turnover report, the current account and stock. The server rejects a sale-less
+ * document for API clients too; this throws before the request so you don't burn
+ * a round trip.
+ *
+ * The one exception is a refund (`invoiceTypeCode: "IADE"`): attaching it to the
+ * sale would count that sale twice, so it is issued unattached.
  *
  * Leave `recipientAlias` empty unless you know the mailbox handle: the server
  * looks the VKN up at GİB and upgrades `EARSIV` to `EFATURA` (with the right
@@ -109,6 +114,11 @@ export function buildPayload(
   lines,
   { transactionHeaderId, issuer, recipientAlias = "", invoiceTypeCode = "SATIS", note } = {},
 ) {
+  if (!transactionHeaderId && String(invoiceTypeCode).toUpperCase() !== "IADE") {
+    throw new Error(
+      "transactionHeaderId is required — create the sale first with createOrder() and pass its transaction_id",
+    );
+  }
   const { canon, totals } = linesAndTotals(lines);
   const canonical = {
     DocumentType: documentType,
