@@ -83,17 +83,17 @@ test("createOrder hits the integrations path", async () => {
   assert.ok(url.endsWith("/v1/integrations/orders"));
 });
 
-test("createOrder needs a buyer to hang the cari off", async () => {
+test("createOrder needs a buyer to name the document recipient", async () => {
   const fetch = fakeFetch(201, {});
   const ff = new FinansfaturaClient({ apiKey: "ff_live_x", fetch });
 
   for (const bad of [order({ external_id: "" }), order({ lines: [] }),
                      order({ buyer: undefined }), order({ buyer: { email: "a@b.c" } })]) {
-    await assert.rejects(() => ff.createOrder(bad), /is required|must have at least one line|names the cari/);
+    await assert.rejects(() => ff.createOrder(bad), /is required|must have at least one line|names the recipient/);
   }
   // rejected before the request — no round trip burned on a known-bad body
   assert.equal(fetch.calls.length, 0);
-  // contact_name stands in for title: it is what names the cari
+  // contact_name stands in for title: it is what names the recipient
   await ff.createOrder(order({ buyer: { contact_name: "Ahmet Yılmaz" } }));
   assert.equal(fetch.calls.length, 1);
 });

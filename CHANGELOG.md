@@ -3,6 +3,26 @@
 Notable changes per release. Versions follow [semver](https://semver.org);
 while below 1.0 a breaking change bumps the minor.
 
+## [0.3.1] — 2026-08-30
+
+Docs and types only, no API change: the sale no longer opens a current account.
+
+### Changed
+
+- `createOrder()`'s `buyer` is now **copied onto the sale** as the document's
+  billing recipient (`Unvan/Ad Soyad`, `VKN/TCKN`, `Vergi Dairesi`, `Adres`,
+  `E-posta`, `Telefon`). No cari is searched for or created any more — one-off
+  e-commerce buyers were filling the taxpayer's contact list, and what the sale
+  actually needed was the recipient, not a card. Contacts you want to track a
+  balance for are still opened from the panel.
+- `title` (or `contact_name`) stays required, for a different reason: it names
+  the recipient the document is issued to, not a cari.
+- `tckn` and `tax_number` are two fields here and **one** on the document —
+  `tax_number` wins when both are sent.
+- `email` documented as what it is: on an e-Arşiv document GİB's mandatory
+  delivery-type field (`EREPSENDT`) is `ELEKTRONIK` when the recipient has an
+  e-mail and `KAGIT` when they do not.
+
 ## [0.3.0] — 2026-08-27
 
 The sale, and the cari behind it, are no longer optional. Both halves are now

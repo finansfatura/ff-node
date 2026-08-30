@@ -74,11 +74,15 @@ export interface OrderLine {
   discount?: number;
 }
 
-/** The buyer becomes the current account ("cari") the sale is booked against —
- *  matched on `tax_number` → `tckn` → `email` → `title`, created when nothing
- *  matches. `title` (or `contact_name`) is what names it, so one of the two is
- *  required. Send `tckn` for individuals, `tax_number` + `tax_office` for
- *  companies: not required, but they make the matching stronger. */
+/** The buyer is copied onto the sale as the document's billing recipient — no
+ *  current account ("cari") is created. `title` (or `contact_name`) is what
+ *  names the recipient, so one of the two is required.
+ *
+ *  `tckn` and `tax_number` are two fields here and ONE on the document
+ *  (`tax_number` wins when both are sent); send whichever your channel holds,
+ *  or a registered e-Fatura recipient cannot be looked up at GİB. `email` is
+ *  worth sending too: on an e-Arşiv document GİB's mandatory delivery-type
+ *  field is `ELEKTRONIK` with an address and `KAGIT` without. */
 export interface OrderBuyer {
   title?: string;
   contact_name?: string;
@@ -104,7 +108,7 @@ export interface Order {
   payment_status?: "PAID" | "PENDING";
   currency?: string;
   total_price?: number;
-  /** required — no cari, no sale. */
+  /** required — the document's billing recipient. */
   buyer: OrderBuyer;
   [key: string]: unknown;
 }

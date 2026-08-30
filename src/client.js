@@ -23,8 +23,8 @@
 //   const result = await ff.issueInvoice(payload, "ORD-1042");
 //
 // The order of the two is fixed and neither half is skippable mid-flow: the sale
-// needs a `buyer` (it becomes the current account — "cari" — the sale hangs off),
-// and the document needs the sale's `transaction_id`. Issuing the document at all
+// needs a `buyer` (it becomes the document's billing recipient, copied onto the
+// sale), and the document needs the sale's `transaction_id`. Issuing the document at all
 // is still your call: leave it out and the company invoices its sales from the panel.
 
 import { errorFromResponse } from "./errors.js";
@@ -41,10 +41,10 @@ function validateOrder(order) {
   if (!order?.external_id) throw new Error("order.external_id is required");
   if (!order.lines?.length) throw new Error("order.lines must have at least one line");
   if (!order.buyer) {
-    throw new Error("order.buyer is required — the sale is booked against a cari, which is resolved from the buyer");
+    throw new Error("order.buyer is required — it is the document's billing recipient");
   }
   if (!order.buyer.title?.trim() && !order.buyer.contact_name?.trim()) {
-    throw new Error("order.buyer needs 'title' (or 'contact_name') — it names the cari");
+    throw new Error("order.buyer needs 'title' (or 'contact_name') — it names the recipient");
   }
 }
 
@@ -114,16 +114,21 @@ export class FinansfaturaClient {
   /**
    * POST /v1/integrations/orders — turn an order into a sale.
    *
-   * The first and mandatory step: the sale feeds the company's turnover, current
-   * account and stock, and survives a failed invoice attempt.
+   * The first and mandatory step: the sale feeds the company's turnover and
+   * stock, and survives a failed invoice attempt.
    *
    * `order` needs `external_id` (your stable order id — resending it never
-   * duplicates the sale), at least one line, and a `buyer`. The buyer becomes the
-   * current account ("cari") the sale is booked against: we match an existing one
-   * on `tax_number` → `tckn` → `email` → `title`, in that order, and create one
-   * when nothing matches. Hence `title` (or `contact_name`) is required — it is
-   * the name the cari gets. `tckn` / `tax_number` are not: send them when the
-   * channel has them, and the matching gets stronger.
+   * duplicates the sale), at least one line, and a `buyer`. The buyer is copied
+   * onto the sale as the document's billing recipient — no current account
+   * ("cari") is created. Hence `title` (or `contact_name`) is required: it names
+   * who the document is issued to.
+   *
+   * The rest is optional but each field lands on the document: `tckn` /
+   * `tax_number` (one identity field there — `tax_number` wins if you send
+   * both), `tax_office`, `address`, `phone` and `email`. Send the identity when
+   * the channel has it, or the recipient cannot be looked up at GİB. Send the
+   * e-mail too: on an e-Arşiv document GİB's mandatory delivery-type field is
+   * derived from it (`ELEKTRONIK` with an address, `KAGIT` without).
    *
    * Prices here are KDV-INCLUSIVE and `vat_rate` is a percentage (`20`) — the
    * opposite of the invoice payload, which is KDV-exclusive with a ratio
