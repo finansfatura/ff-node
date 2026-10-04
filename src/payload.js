@@ -6,6 +6,10 @@
 // `Lines`, `Totals`, `VKNorTCKN` …). A snake_case key inside `canonical` is
 // silently ignored. These builders encode that so callers never get it wrong.
 //
+// The one exception is the `*_info` blocks (`return_info` and the
+// document-type extras): those DO carry a json tag on the server, so there the
+// snake_case key is the correct one and PascalCase is the one that gets dropped.
+//
 // Totals are computed from the lines with exact decimal (BigInt) arithmetic to
 // avoid float kuruş drift; `LineTotal` is the KDV-excl net used verbatim by the
 // server.
@@ -58,7 +62,9 @@ function party(p) {
   };
 }
 
-function linesAndTotals(lines) {
+function linesAndTotals(lines, exemptionCode = "", exemptionReason = "") {
+  const code = String(exemptionCode).trim();
+  const reason = String(exemptionReason).trim();
   const canon = [];
   let subtotal = 0n; // cents
   let vatTotal = 0n; // cents
@@ -68,7 +74,7 @@ function linesAndTotals(lines) {
     const vat = roundTo2(lineNet * toScaled(l.vat_rate).digits, 2 + toScaled(l.vat_rate).scale);
     subtotal += lineNet;
     vatTotal += vat;
-    canon.push({
+    const line = {
       Title: l.title,
       ProductCode: l.product_code || "",
       Quantity: Number(l.qty),
@@ -76,7 +82,36 @@ function linesAndTotals(lines) {
       UnitCode: l.unit_code || "C62",
       VatRate: Number(l.vat_rate), // 0.20 == %20
       LineTotal: centsToNum(lineNet),
-    });
+    };
+    // TEVKİFAT — satır bazında, kod yeterli. ORAN GÖNDERİLMEZ: her GİB kodunun
+    // yasal oranı sabittir ve sunucu oranı koddan türetir (612 temizlik 2023'te
+    // 7/10 → 9/10). Oranı istemciden almak eski entegrasyonların yanlış beyanı
+    // demekti.
+    if (l.withholding_code) {
+      line.WithholdingCode = String(l.withholding_code).trim();
+      if (l.withholding_name) line.WithholdingName = String(l.withholding_name);
+    }
+    // ÖZEL MATRAH — KDV'nin hesaplanacağı taban satırın net tutarından FARKLIYSA.
+    // İstisnayla karıştırma: orada KDV yoktur, burada vardır.
+    if (l.tax_base_amount) {
+      line.TaxBaseAmount = Number(l.tax_base_amount);
+      line.TaxBaseCode = String(l.tax_base_code ?? "").trim();
+      line.TaxBaseReason = String(l.tax_base_reason ?? "").trim();
+    }
+    // VAT EXEMPTION — zero-VAT lines only, exactly as the server does it:
+    // attaching it to a VAT-bearing line would make the exemption look like it
+    // covers that line too.
+    if (Number(l.vat_rate) === 0) {
+      if (!code || !reason) {
+        throw new Error(
+          "a line with vat_rate 0 needs opts.exemptionCode and opts.exemptionReason — " +
+            "GİB rejects a zero-VAT line without an exemption reason",
+        );
+      }
+      line.TaxExemptionReasonCode = code;
+      line.TaxExemptionReason = reason;
+    }
+    canon.push(line);
   }
   const totals = {
     SubtotalExclVAT: centsToNum(subtotal),
@@ -85,6 +120,50 @@ function linesAndTotals(lines) {
     GrandTotal: centsToNum(subtotal + vatTotal),
   };
   return { canon, totals };
+}
+
+/** IADE, TEVKIFATIADE and YTBIADE all need the original-invoice reference. */
+function isReturnType(code) {
+  return ["IADE", "TEVKIFATIADE", "YTBIADE"].includes(String(code).trim().toUpperCase());
+}
+
+/**
+ * The refunded invoice's number + issue date. The date goes out as RFC 3339
+ * because the server parses it into a Go `time.Time`; a bare "2026-09-27"
+ * fails to unmarshal and surfaces as a meaningless 400.
+ */
+function originalRef(ref) {
+  const number = String(ref?.number ?? "").trim();
+  const date = String(ref?.issue_date ?? "").trim();
+  if (!number || !date) {
+    throw new Error(
+      'a refund needs opts.returnInfo = { number, issue_date: "YYYY-MM-DD" } — ' +
+        "GİB rejects a refund without the original invoice reference",
+    );
+  }
+  return {
+    Number: number,
+    IssueDate: /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date}T00:00:00Z` : date,
+  };
+}
+
+/**
+ * Validate the e-Fatura scenario. Empty is fine — the server defaults to
+ * TICARIFATURA. Anything else is rejected here rather than silently
+ * overwritten server-side.
+ */
+function normalizeScenario(documentType, scenario) {
+  const s = String(scenario || "").trim().toUpperCase();
+  if (!s) return "";
+  if (String(documentType).toUpperCase() !== "EFATURA") {
+    throw new Error(
+      `opts.scenario only applies to EFATURA; ${documentType} has a fixed scenario`,
+    );
+  }
+  if (s !== "TEMELFATURA" && s !== "TICARIFATURA") {
+    throw new Error(`opts.scenario must be TEMELFATURA or TICARIFATURA, got: ${s}`);
+  }
+  return s;
 }
 
 /**
@@ -107,28 +186,85 @@ function linesAndTotals(lines) {
  *
  * Do NOT pass `issuer` in production — the server fills seller identity from the
  * company profile. It exists only for testing before the profile VKN is set.
+ *
+ * A refund (`invoiceTypeCode`: `IADE`/`TEVKIFATIADE`/`YTBIADE`) needs the
+ * ORIGINAL invoice it refunds: pass `returnInfo` as
+ * `{ number: "FF32026000000123", issue_date: "2026-09-27" }`. GİB rejects a
+ * refund without that reference, so this is required, not optional.
+ *
+ * `currency` + `exchangeRate` only matter on a refund: on a sale the server
+ * takes both from the sale itself. A refund repeats the rate the original sale
+ * carried — it does not set a new one.
+ *
+ * `scenario` picks the e-Fatura scenario and only applies to `EFATURA`:
+ * `TEMELFATURA` (the recipient cannot answer; the document is final) or
+ * `TICARIFATURA` (the recipient may send KABUL/RED within 8 days, the default).
+ * The difference is legal, not cosmetic. e-Arşiv has no choice.
+ *
+ * A line with `vat_rate` 0 needs a VAT-exemption reason — GİB rejects a zero-VAT
+ * line without one — so pass `exemptionCode` + `exemptionReason`. The code is
+ * document-level and lands only on the zero-VAT lines.
  */
 export function buildPayload(
   documentType,
   recipient,
   lines,
-  { transactionHeaderId, issuer, recipientAlias = "", invoiceTypeCode = "SATIS", note } = {},
+  {
+    transactionHeaderId,
+    issuer,
+    recipientAlias = "",
+    invoiceTypeCode = "SATIS",
+    note,
+    exemptionCode,
+    exemptionReason,
+    scenario,
+    returnInfo,
+    currency,
+    exchangeRate,
+    exchangeRateDate,
+  } = {},
 ) {
-  if (!transactionHeaderId && String(invoiceTypeCode).toUpperCase() !== "IADE") {
+  // Muafiyet ÜÇ iade tipini de kapsar (bkz. isReturnType): TEVKIFATIADE ve
+  // YTBIADE de iadedir ve satışa bağlanırsa aynı satış iki kez sayılır.
+  if (!transactionHeaderId && !isReturnType(invoiceTypeCode)) {
     throw new Error(
       "transactionHeaderId is required — create the sale first with createOrder() and pass its transaction_id",
     );
   }
-  const { canon, totals } = linesAndTotals(lines);
+  const { canon, totals } = linesAndTotals(lines, exemptionCode, exemptionReason);
+  const scen = normalizeScenario(documentType, scenario);
+  const cur = String(currency || "TRY").trim().toUpperCase() || "TRY";
   const canonical = {
     DocumentType: documentType,
     InvoiceTypeCode: invoiceTypeCode,
-    Currency: "TRY",
+    Currency: cur,
     RecipientAlias: recipientAlias || "",
     Recipient: party(recipient),
     Lines: canon,
     Totals: totals,
   };
+  if (scen) canonical.Scenario = scen;
+  if (cur !== "TRY") {
+    const rate = Number(exchangeRate || 0);
+    if (!(rate > 0)) {
+      throw new Error(
+        "opts.exchangeRate is required when currency is not TRY — " +
+          "a foreign-currency document cannot be issued without the TL rate",
+      );
+    }
+    canonical.ExchangeRate = rate;
+    if (exchangeRateDate) canonical.ExchangeRateDate = String(exchangeRateDate);
+  }
+  // İADE ATFI — anahtar snake_case: canonical'ın geri kalanı PascalCase bağlanır
+  // (alanların json tag'i yok) ama *_info blokları TAG'LIDIR. "ReturnInfo"
+  // sessizce düşer ve belge atıfsız iade olarak reddedilir.
+  if (isReturnType(invoiceTypeCode)) {
+    canonical.return_info = { Originals: [originalRef(returnInfo)] };
+  } else if (returnInfo != null) {
+    throw new Error(
+      "opts.returnInfo only applies to a refund — set invoiceTypeCode to IADE",
+    );
+  }
   if (issuer != null) canonical.Issuer = party(issuer);
   if (note) canonical.Note = note;
   const payload = { document_type: documentType, canonical };

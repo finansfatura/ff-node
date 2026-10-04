@@ -1,6 +1,6 @@
 {
   "name": "finansfatura",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Node client for the Finansfatura e-invoice (e-Fatura / e-Arşiv) API",
   "type": "module",
   "main": "src/index.js",

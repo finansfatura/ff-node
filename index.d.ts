@@ -20,6 +20,21 @@ export interface Line {
   vat_rate: number | string;
   product_code?: string;
   unit_code?: string;
+  /**
+   * TEVKİFAT — GİB code (6xx partial, 8xx opt-in full). The RATE is not sent:
+   * each code's legal rate is fixed and the server derives it from the code
+   * (612 went from 7/10 to 9/10 in 2023).
+   */
+  withholding_code?: string;
+  withholding_name?: string;
+  /**
+   * ÖZEL MATRAH — the base VAT is computed on, when it differs from the line's
+   * own net (second-hand vehicles, jewellery, phone cards). Not to be confused
+   * with an exemption: there is VAT here, it is just computed on this base.
+   */
+  tax_base_amount?: number;
+  tax_base_code?: string;
+  tax_base_reason?: string;
 }
 
 export interface BuildOptions {
@@ -35,6 +50,29 @@ export interface BuildOptions {
   /** "SATIS" (default) or "IADE" — the only value that waives the sale link. */
   invoiceTypeCode?: string;
   note?: string;
+  /**
+   * VAT-exemption reason for zero-VAT lines (GİB code list, e.g. "301"). Both
+   * are required when any line has `vat_rate: 0` — GİB rejects a zero-VAT line
+   * without a reason. Document-level: applied only to the zero-VAT lines.
+   */
+  exemptionCode?: string;
+  exemptionReason?: string;
+  /**
+   * e-Fatura scenario, `EFATURA` only: `TEMELFATURA` (recipient cannot answer,
+   * the document is final) or `TICARIFATURA` (recipient may send KABUL/RED
+   * within 8 days — the default). Legal difference, not cosmetic.
+   */
+  scenario?: "TEMELFATURA" | "TICARIFATURA";
+  /**
+   * The invoice a refund refunds. Required when `invoiceTypeCode` is
+   * `IADE`/`TEVKIFATIADE`/`YTBIADE` — GİB rejects a refund without it.
+   */
+  returnInfo?: { number: string; issue_date: string };
+  /** Document currency; only meaningful on a refund (a sale takes it from the sale). */
+  currency?: string;
+  /** TL value of one unit of `currency` — required when `currency` is not TRY. */
+  exchangeRate?: number;
+  exchangeRateDate?: string;
 }
 
 export interface IssuePayload {
@@ -108,6 +146,14 @@ export interface Order {
   payment_status?: "PAID" | "PENDING";
   currency?: string;
   total_price?: number;
+  /**
+   * VAT-exemption reason (GİB code, e.g. "301") — DOCUMENT-level, not per line.
+   * Needed when any line has `vat_rate: 0`: without it the sale is still
+   * recorded but its invoice cannot be issued. Stored on the sale and read at
+   * issuance.
+   */
+  invoice_exemption_code?: string;
+  invoice_exemption_reason?: string;
   /** required — the document's billing recipient. */
   buyer: OrderBuyer;
   [key: string]: unknown;

@@ -144,6 +144,31 @@ export class FinansfaturaClient {
   }
 
   /**
+   * POST /v1/integrations/refunds — send a refund.
+   *
+   * A refund is its OWN document (an `IADE` invoice) with its own idempotency
+   * key, and it is deliberately not attached to the sale — attaching it would
+   * count the sale twice.
+   *
+   * `refund` needs `external_id` (your stable refund id — resending it never
+   * duplicates), `order_external_id` (the sale it refunds), at least one line
+   * and a `buyer`. Lines carry POSITIVE amounts: the document type, not the
+   * sign, says it is a refund. Prices are KDV-INCLUSIVE and `vat_rate` is a
+   * percentage, exactly as in `createOrder()`.
+   *
+   * A refund of a foreign-currency sale still needs the rate; send the same
+   * `exchange_rate` the sale carried, or the document cannot be issued.
+   */
+  async refund(refund) {
+    for (const required of ["external_id", "order_external_id"]) {
+      if (!refund?.[required]) throw new Error(`${required} is required`);
+    }
+    if (!refund.lines?.length) throw new Error("at least one line is required");
+    const resp = await this._request("POST", "/v1/integrations/refunds", { body: refund });
+    return resp.json();
+  }
+
+  /**
    * GET /v1/integrations/:provider/orders/status — bulk invoice status.
    *
    * `externalIds` is an array (or comma string) of your order ids, at most 50 per

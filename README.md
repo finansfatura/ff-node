@@ -162,6 +162,131 @@ const pdf = await ff.download(invoiceId, "pdf"); // Uint8Array; or "html" / "xml
 await ff.cancel(invoiceId);                      // e-Arşiv outright; e-Fatura is a process
 ```
 
+## VAT exemption
+
+**A zero-VAT line cannot be invoiced without an exemption reason** — GİB rejects
+it. The reason is document-level and lands only on the zero-VAT lines, so a mixed
+document never looks like the exemption covers the taxed lines too.
+
+```js
+const payload = buildEarsivPayload(recipient, [
+  { title: "Mal ihracatı", qty: 1, unit_price: 1000.0, vat_rate: 0 },
+  { title: "Kargo", qty: 1, unit_price: 100.0, vat_rate: 0.2 },
+], {
+  transactionHeaderId: sale.transaction_id,
+  exemptionCode: "301",                   // GİB 2xx (partial) / 3xx (full)
+  exemptionReason: "11/1-a Mal ihracatı",
+});
+```
+
+Both are required together: GİB will not take an empty `cbc:TaxExemptionReason`,
+and a code with no text declares nothing. On a sale, send
+`invoice_exemption_code` + `invoice_exemption_reason` instead — it is then stored
+on the sale and the invoice reads it from there.
+
+**Do not send the invoice type.** The server derives it (zero-VAT + exemption →
+`ISTISNA`).
+
+## Scenario (e-Fatura only)
+
+`TEMELFATURA` or `TICARIFATURA`. The difference is legal, not cosmetic: on a
+TEMEL invoice the recipient cannot answer and the document is final; on a TİCARİ
+one they may send KABUL/RED within 8 days. Default is TICARIFATURA; e-Arşiv has
+no choice.
+
+```js
+buildEfaturaPayload(recipient, lines, "", {
+  transactionHeaderId: sale.transaction_id,
+  scenario: "TEMELFATURA",
+});
+```
+
+## Refunds
+
+A refund is its own document (`IADE`) with its own idempotency key, deliberately
+not attached to the sale — attaching it would count the sale twice.
+
+```js
+await ff.refund({
+  external_id: "REF-2026-0007",       // your stable refund id
+  order_external_id: "ORD-2026-00184", // the sale being refunded
+  currency: "TRY",
+  total_price: 120.0,
+  lines: [/* same shape as the sale's lines */],
+  buyer: {/* same recipient */},
+});
+```
+
+Lines carry **positive** amounts; the document type, not the sign, says it is a
+refund. Prices are KDV-INCLUSIVE and `vat_rate` is a percentage, as in
+`createOrder()`.
+
+Refunding a foreign-currency sale uses the ORIGINAL sale's rate, not today's:
+leave `exchange_rate` out and we look it up from the sale we hold. Refunding a
+months-old sale at today's rate is a wrong declaration.
+
+### Issuing the refund document yourself
+
+It needs the ORIGINAL invoice it refunds — GİB rejects a refund without that
+reference:
+
+```js
+buildEarsivPayload(recipient, lines, {
+  invoiceTypeCode: "IADE",            // or TEVKIFATIADE / YTBIADE
+  returnInfo: { number: "FF32026000000123", issue_date: "2026-09-27" },
+});
+```
+
+The date is sent as RFC 3339 for you; a bare `2026-09-27` would fail to parse
+server-side. This is also the one document where `currency` / `exchangeRate`
+matter — there is no sale to take them from.
+
+## Withholding and special tax base
+
+Both are per line, and they are opposite situations — withholding splits who
+*pays* the VAT, a special tax base changes what the VAT is *computed on*:
+
+```js
+buildEfaturaPayload(recipient, [
+  { title: "Temizlik hizmeti", qty: 1, unit_price: 1000.0, vat_rate: 0.2,
+    withholding_code: "612", withholding_name: "Temizlik hizmeti" },
+  { title: "İkinci el araç", qty: 1, unit_price: 550000.0, vat_rate: 0.2,
+    tax_base_amount: 50000.0, tax_base_code: "812",
+    tax_base_reason: "İkinci el araç kâr marjı" },
+], "", { transactionHeaderId: sale.transaction_id });
+```
+
+**You do not send the withholding rate.** Each GİB code carries a fixed legal
+rate and the server derives it from the code — `612` (cleaning) went from 7/10
+to 9/10 in 2023. If the rate came from you, a GİB update would leave your
+integration filing wrong declarations for years.
+
+`8xx` codes exist in *both* lists (withholding 801-825, special base 801-812) but
+are different UBL elements and different fields.
+
+## Exchange rates
+
+**You usually don't need to supply one.** Leave `exchange_rate` off a
+foreign-currency sale (or send `0`) and the server fills in the TCMB rate, then
+tells you what it used:
+
+```js
+const sale = await ff.createOrder({
+  external_id: "ORD-1", currency: "USD", // no exchange_rate
+  buyer, lines,
+});
+sale.exchange_rate;        // 41.37
+sale.exchange_rate_source; // "TCMB" — ours. "MANUAL" when you sent your own
+sale.exchange_rate_date;   // "27.09.2026" — the bulletin's date
+```
+
+Send your own rate when you want yours instead of ours: it is used verbatim and
+never compared against TCMB. The bulletin is published on weekdays around 15:30
+and not at weekends, so a Monday-morning document carries Friday's rate.
+
+A rate is never invented: if the bulletin does not carry that currency the
+request fails with `ERROR_EXCHANGE_RATE_REQUIRED`.
+
 ## Errors
 
 Failed calls throw a typed error carrying `.status`, `.body` and `.retryable`:
