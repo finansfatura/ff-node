@@ -1,0 +1,56 @@
+# Publishes to npm on every pushed v* tag (or a GitHub Release) using npm
+# Trusted Publishing (OIDC) — no NPM_TOKEN stored in the repo. Mirrors
+# ff-python's publish.yml so the four clients release the same way.
+#
+# One-time setup on npmjs.com: package → Settings → Trusted Publishers → add
+#   organization/user: finansfatura   repository: ff-node
+#   workflow filename: publish.yml    environment: (leave blank)
+#
+# NODE_AUTH_TOKEN is deliberately NOT set: with trusted publishing the token
+# would take precedence and the OIDC exchange would never happen. Provenance is
+# attached automatically, which is why `repository.url` in package.json has to
+# match this repo.
+name: publish
+
+on:
+  release:
+    types: [published]
+  push:
+    tags: ["v*"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm test
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # required for trusted publishing
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      # Trusted publishing needs npm >= 11.5.1; Node 22 ships an older npm.
+      - run: npm install -g npm@latest
+      # The tag must match package.json, otherwise npm publishes a version
+      # nobody asked for and the tag silently means something else.
+      - name: Tag ile package.json surumu ayni mi
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag v$tag ile package.json $pkg uyusmuyor" >&2
+            exit 1
+          fi
+      - run: npm publish

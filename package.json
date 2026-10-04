@@ -22,6 +22,6 @@
   "license": "MIT",
   "author": "Finansfatura",
   "homepage": "https://github.com/finansfatura/ff-node",
-  "repository": { "type": "git", "url": "https://github.com/finansfatura/ff-node.git" },
+  "repository": { "type": "git", "url": "git+https://github.com/finansfatura/ff-node.git" },
   "bugs": { "url": "https://github.com/finansfatura/ff-node/issues" }
 }
